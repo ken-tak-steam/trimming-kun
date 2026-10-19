@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>トリミングくん - オフライン画像＆PDF一括トリミング・変換ツール</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- PDF.js CDN (PDF解析・レンダリング用) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <!-- jsPDF CDN (PDF生成ライブラリ) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <!-- JSZip & FileSaver CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        .drag-over { border-color: #3b82f6 !important; background-color: #eff6ff !important; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        
+        /* クロップ領域ドラッグ用の選択ボックススタイル */
+        .crop-selection {
+            position: absolute;
+            border: 2px dashed #2563eb;
+            background-color: rgba(37, 99, 235, 0.15);
+            cursor: move;
+            box-sizing: border-box;
+        }
+        .crop-handle {
+            position: absolute;
+            width: 10px;
+            height: 10px;
+            background-color: #2563eb;
+            border: 1px solid white;
+            border-radius: 50%;
+        }
+    </style>
+</head>
+<body class="bg-slate-100 text-slate-800 font-sans min-h-screen flex flex-col">
+
+    <!-- ヘッダー -->
+    <header class="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="p-2 bg-blue-600 text-white rounded-lg shadow-md">
+                    <i data-lucide="scissors"></i>
+                </div>
+                <div>
+                    <h1 class="text-xl font-bold text-slate-900 leading-tight">トリミングくん</h1>
+                    <p class="text-xs text-slate-500">画像/PDF各ページの特定範囲一括トリミング・JPEG/PDF変換（オフライン対応）</p>
+                </div>
+            </div>
+            <div class="flex items-center space-x-2">
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800">
+                    <span class="w-2 h-2 mr-1.5 bg-emerald-500 rounded-full"></span>
+                    完全ローカル動作
+                </span>
+            </div>
+        </div>
+    </header>
+
+    <!-- メインコンテンツ -->
+    <main class="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+        <!-- 左側：操作パネル (4/12) -->
+        <div class="lg:col-span-4 space-y-5">
+
+            <!-- ドロップ領域 -->
+            <div id="drop-zone" class="border-2 border-dashed border-slate-300 rounded-xl p-5 bg-white text-center hover:border-blue-400 transition cursor-pointer shadow-sm group">
+                <input type="file" id="file-input" multiple accept="image/*,application/pdf" class="hidden">
+                <div class="flex flex-col items-center">
+                    <div class="w-10 h-10 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mb-2 group-hover:scale-110 transition">
+                        <i data-lucide="upload-cloud" class="w-5 h-5"></i>
+                    </div>
+                    <p class="font-semibold text-slate-700 text-xs">画像 または PDF ファイルを選択</p>
+                    <p class="text-[11px] text-slate-400 mt-0.5">またはここにドラッグ＆ドロップ</p>
+                    <span class="mt-2 text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded border border-slate-200">JPG, PNG, WEBP, PDF 対応</span>
+                </div>
+            </div>
+
+            <!-- 操作メニュー -->
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden divide-y divide-slate-100">
+                
+                <!-- 1. PDF・画像 トリミング設定 -->
+                <div class="p-4 space-y-3">
+                    <div class="flex items-center justify-between">
+                        <h2 class="font-bold text-slate-800 flex items-center text-xs uppercase tracking-wider">
+                            <i data-lucide="crop" class="w-4 h-4 mr-2 text-blue-600"></i>
+                            1. 特定エリアのトリミング設定
+                        </h2>
+                    </div>
+
+                    <button id="btn-open-region-selector" class="w-full py-2 px-3 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-xs font-medium transition flex items-center justify-center space-x-2">
+                        <i data-lucide="scan" class="w-4 h-4"></i>
+                        <span>画面上でトリミング範囲を指定</span>
+                    </button>
+
+                    <div class="grid grid-cols-2 gap-2 text-xs text-slate-600 pt-1">
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-500">モード</label>
+                            <select id="crop-mode" class="w-full text-xs bg-slate-50 border border-slate-300 rounded-lg p-1.5 focus:ring-1 focus:ring-blue-500">
+                                <option value="region">範囲選択（座標指定）</option>
+                                <option value="ratio">アスペクト比固定</option>
+                                <option value="none">トリミングなし (全体)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-500">アスペクト比</label>
+                            <select id="aspect-ratio-select" class="w-full text-xs bg-slate-50 border border-slate-300 rounded-lg p-1.5 focus:ring-1 focus:ring-blue-500">
+                                <option value="free">自由 (全範囲)</option>
+                                <option value="1:1">1:1 (正方形)</option>
+                                <option value="16:9">16:9</option>
+                                <option value="4:3">4:3</option>
+                                <option value="A4">A4縦比率</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 2. リネーム設定 -->
+                <div class="p-4 space-y-3">
+                    <h2 class="font-bold text-slate-800 flex items-center text-xs uppercase tracking-wider">
+                        <i data-lucide="file-text" class="w-4 h-4 mr-2 text-blue-600"></i>
+                        2. 出力ファイル名・番号
+                    </h2>
+
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-500 mb-1">ファイル名接頭辞 (Prefix)</label>
+                        <input type="text" id="rename-prefix" value="page_" placeholder="例: page_" class="w-full text-xs bg-slate-50 border border-slate-300 rounded-lg p-1.5 focus:ring-1 focus:ring-blue-500">
+                    </div>
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-500 mb-1">開始番号</label>
+                            <input type="number" id="rename-start" value="1" min="0" class="w-full text-xs bg-slate-50 border border-slate-300 rounded-lg p-1.5 focus:ring-1 focus:ring-blue-500">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-500 mb-1">ゼロ埋め桁数</label>
+                            <select id="rename-digits" class="w-full text-xs bg-slate-50 border border-slate-300 rounded-lg p-1.5 focus:ring-1 focus:ring-blue-500">
+                                <option value="1">1桁 (1...)</option>
+                                <option value="2">2桁 (01...)</option>
+                                <option value="3" selected>3桁 (001...)</option>
+                                <option value="4">4桁 (0001...)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 3. エクスポート / 出力形式 -->
+                <div class="p-4 space-y-3 bg-slate-50">
+                    <h2 class="font-bold text-slate-800 flex items-center text-xs uppercase tracking-wider">
+                        <i data-lucide="download" class="w-4 h-4 mr-2 text-blue-600"></i>
+                        3. 保存・ダウンロード
+                    </h2>
+
+                    <div class="space-y-2">
+                        <button id="btn-export-jpeg-zip" class="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium text-xs rounded-lg shadow-sm transition flex items-center justify-center space-x-2">
+                            <i data-lucide="file-image" class="w-4 h-4"></i>
+                            <span>トリミング領域をJPEG(ZIP)保存</span>
+                        </button>
+                        
+                        <button id="btn-export-png-zip" class="w-full py-2 px-4 bg-slate-700 hover:bg-slate-800 text-white font-medium text-xs rounded-lg shadow-sm transition flex items-center justify-center space-x-2">
+                            <i data-lucide="image" class="w-4 h-4"></i>
+                            <span>PNG(ZIP)で個別保存</span>
+                        </button>
+
+                        <button id="btn-export-pdf" class="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-xs rounded-lg shadow-sm transition flex items-center justify-center space-x-2">
+                            <i data-lucide="file-type-2" class="w-4 h-4"></i>
+                            <span>トリミング結果をまとめて1つのPDF保存</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- 右側：プレビューリスト (8/12) -->
+        <div class="lg:col-span-8 flex flex-col space-y-4">
+
+            <!-- リストツールバー -->
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex items-center justify-between">
+                <div class="flex items-center space-x-2">
+                    <i data-lucide="layers" class="w-5 h-5 text-slate-500"></i>
+                    <h2 class="font-bold text-slate-800 text-sm">対象ページ・画像一覧 (<span id="page-count">0</span>件)</h2>
+                </div>
+                <div class="flex items-center space-x-2">
+                    <button id="btn-clear-all" class="text-xs text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-md border border-red-200 transition flex items-center space-x-1">
+                        <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                        <span>クリア</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- 空状態表示 -->
+            <div id="empty-state" class="bg-white rounded-xl border border-dashed border-slate-300 p-12 text-center flex-1 flex flex-col items-center justify-center min-h-[350px]">
+                <i data-lucide="file-input" class="w-12 h-12 text-slate-300 mb-3"></i>
+                <p class="text-slate-600 text-sm font-semibold">PDFファイル または 画像が読み込まれていません</p>
+                <p class="text-slate-400 text-xs mt-1">左側のエリアにドラッグ＆ドロップして読み込んでください。</p>
+            </div>
+
+            <!-- ページ・画像プレビュー一覧 -->
+            <div id="page-grid" class="grid grid-cols-1 sm:grid-cols-2 gap-4 overflow-y-auto max-h-[calc(100vh-220px)] pr-1">
+                <!-- JavaScriptで生成 -->
+            </div>
+
+        </div>
+
+    </main>
+
+    <!-- フッター（コンパクトリンク表示） -->
+    <footer class="bg-white border-t border-slate-200 text-xs py-3 px-4 mt-auto">
+        <div class="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2 text-slate-500">
+            <p>Copyright (c) 2026 Takakura Kentaro</p>
+            <button id="btn-open-license" class="text-blue-600 hover:text-blue-800 hover:underline flex items-center space-x-1 transition">
+                <i data-lucide="file-text" class="w-3.5 h-3.5"></i>
+                <span>ライセンス情報</span>
+            </button>
+        </div>
+    </footer>
+
+    <!-- Modal: ライセンス表示モーダル -->
+    <div id="license-modal" class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 flex items-center justify-center hidden p-4">
+        <div class="bg-white rounded-xl shadow-2xl max-w-lg w-full flex flex-col max-h-[85vh]">
+            <div class="px-5 py-3 border-b border-slate-200 flex justify-between items-center bg-slate-50">
+                <div class="flex items-center space-x-2">
+                    <i data-lucide="shield-check" class="w-4 h-4 text-blue-600"></i>
+                    <h3 class="font-bold text-slate-800 text-sm">ライセンス情報</h3>
+                </div>
+                <button id="btn-close-license-modal" class="text-slate-400 hover:text-slate-600 p-1 rounded-lg">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+            
+            <div class="p-5 overflow-y-auto text-xs space-y-3 leading-relaxed text-slate-600">
+                <p class="font-bold text-slate-900 text-sm">Copyright (c) 2026 Takakura Kentaro</p>
+                <p>
+                    本ソフトウェアの著作権は、著作者に帰属します。<br>
+                    以下の条件を満たす場合、本ソフトウェアの使用、複製、改変および再配布を無償で許可します。
+                </p>
+                <ol class="list-decimal list-inside space-y-2 text-slate-600 border-t border-slate-100 pt-3">
+                    <li><strong class="text-slate-800">著作者表示</strong><br><span class="pl-4 inline-block text-slate-500">再配布・改変版の公開時には、原著作者名、出典URLおよび本ライセンスを明示してください。</span></li>
+                    <li><strong class="text-slate-800">非商用利用</strong><br><span class="pl-4 inline-block text-slate-500">本ソフトウェア自体の販売、商用製品への組み込み、その他の営利目的での利用は禁止します。ただし、学校教育、有料・無料の講習会、研修会で教材として利用することは認めます。</span></li>
+                    <li><strong class="text-slate-800">改変・再配布</strong><br><span class="pl-4 inline-block text-slate-500">改変および再配布を認めます。改変した場合は、その旨を明示してください。</span></li>
+                    <li><strong class="text-slate-800">免責事項</strong><br><span class="pl-4 inline-block text-slate-500">本ソフトウェアは現状有姿で提供されます。著作者は、使用によって生じた損害について、法令で認められる範囲で責任を負いません。</span></li>
+                </ol>
+            </div>
+
+            <div class="p-3 bg-slate-50 border-t border-slate-200 text-right">
+                <button id="btn-close-license-modal-footer" class="px-4 py-1.5 bg-slate-700 hover:bg-slate-800 text-white font-medium text-xs rounded-lg transition">閉じる</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: 視覚的トリミング領域選択モーダル -->
+    <div id="region-modal" class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 flex items-center justify-center hidden p-4">
+        <div class="bg-white rounded-xl shadow-2xl max-w-4xl w-full flex flex-col max-h-[92vh]">
+            <div class="px-5 py-3 border-b border-slate-200 flex justify-between items-center bg-slate-50">
+                <div class="flex items-center space-x-2">
+                    <i data-lucide="crop" class="w-4 h-4 text-blue-600"></i>
+                    <h3 class="font-bold text-slate-800 text-sm">ドラッグして全ページ共通のトリミング範囲を選択</h3>
+                </div>
+                <button id="btn-close-region-modal" class="text-slate-400 hover:text-slate-600 p-1 rounded-lg">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+            
+            <div class="p-4 flex-1 overflow-auto bg-slate-200 flex items-center justify-center relative select-none">
+                <div id="canvas-container" class="relative inline-block shadow-lg bg-white">
+                    <canvas id="region-canvas" class="block max-w-full max-h-[65vh]"></canvas>
+                    <div id="crop-box" class="crop-selection hidden"></div>
+                </div>
+            </div>
+
+            <div class="p-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-xs">
+                <span id="crop-coords-text" class="text-slate-500 font-mono">範囲: 座標未指定</span>
+                <div class="flex space-x-2">
+                    <button id="btn-reset-crop" class="px-3 py-1.5 border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-100">全画面指定</button>
+                    <button id="btn-apply-crop" class="px-4 py-1.5 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700">この設定をすべてのページに反映</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // PDF.js worker 設定
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+        lucide.createIcons();
+
+        // アプリケーション状態
+        let itemList = []; // { id, name, type: 'image'|'pdf-page', canvas, width, height }
+        let cropRegionPercent = { x: 0, y: 0, w: 1, h: 1 }; // 割合（0.0 ~ 1.0）でトリミング範囲を管理
+
+        // DOM要素
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('file-input');
+        const pageGrid = document.getElementById('page-grid');
+        const emptyState = document.getElementById('empty-state');
+        const pageCountEl = document.getElementById('page-count');
+
+        const renamePrefix = document.getElementById('rename-prefix');
+        const renameStart = document.getElementById('rename-start');
+        const renameDigits = document.getElementById('rename-digits');
+
+        const btnOpenRegionSelector = document.getElementById('btn-open-region-selector');
+        const regionModal = document.getElementById('region-modal');
+        const btnCloseRegionModal = document.getElementById('btn-close-region-modal');
+        const btnApplyCrop = document.getElementById('btn-apply-crop');
+        const btnResetCrop = document.getElementById('btn-reset-crop');
+        const regionCanvas = document.getElementById('region-canvas');
+        const cropBox = document.getElementById('crop-box');
+        const canvasContainer = document.getElementById('canvas-container');
+        const cropCoordsText = document.getElementById('crop-coords-text');
+
+        const btnExportJpegZip = document.getElementById('btn-export-jpeg-zip');
+        const btnExportPngZip = document.getElementById('btn-export-png-zip');
+        const btnExportPdf = document.getElementById('btn-export-pdf');
+        const btnClearAll = document.getElementById('btn-clear-all');
+
+        // ライセンスモーダル関連要素
+        const btnOpenLicense = document.getElementById('btn-open-license');
+        const licenseModal = document.getElementById('license-modal');
+        const btnCloseLicenseModal = document.getElementById('btn-close-license-modal');
+        const btnCloseLicenseModalFooter = document.getElementById('btn-close-license-modal-footer');
+
+        btnOpenLicense.addEventListener('click', () => licenseModal.classList.remove('hidden'));
+        btnCloseLicenseModal.addEventListener('click', () => licenseModal.classList.add('hidden'));
+        btnCloseLicenseModalFooter.addEventListener('click', () => licenseModal.classList.add('hidden'));
+
+        // イベント設定
+        dropZone.addEventListener('click', () => fileInput.click());
+        dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('drag-over');
+            if (e.dataTransfer.files.length > 0) handleFiles(e.dataTransfer.files);
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFiles(e.target.files);
+                fileInput.value = '';
+            }
+        });
+
+        btnClearAll.addEventListener('click', () => {
+            itemList = [];
+            updateUI();
+        });
+
+        [renamePrefix, renameStart, renameDigits].forEach(el => {
+            el.addEventListener('input', () => renderGridPreviews());
+        });
+
+        // ファイル受領・パース処理
+        async function handleFiles(files) {
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                if (file.type === 'application/pdf') {
+                    await processPdfFile(file);
+                } else if (file.type.startsWith('image/')) {
+                    await processImageFile(file);
+                }
+            }
+            updateUI();
+        }
+
+        // PDFファイルの各ページ解釈・描画
+        async function processPdfFile(file) {
+            const arrayBuffer = await file.arrayBuffer();
+            const pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+
+            for (let pageNum = 1; pageNum <= pdfDoc.numPages; pageNum++) {
+                const page = await pdfDoc.getPage(pageNum);
+                const viewport = page.getViewport({ scale: 2.0 }); // 鮮明な画像としてレンダリング
+
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                canvas.width = viewport.width;
+                canvas.height = viewport.height;
+
+                await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+
+                itemList.push({
+                    id: 'item_' + Date.now() + '_' + Math.random().toString(36).substr(2, 7),
+                    name: `${file.name.replace(/\.[^/.]+$/, "")}_p${pageNum}`,
+                    canvas: canvas,
+                    width: canvas.width,
+                    height: canvas.height
+                });
+            }
+        }
+
+        // 画像ファイルの読み込み
+        function processImageFile(file) {
+            return new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        canvas.width = img.width;
+                        canvas.height = img.height;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0);
+
+                        itemList.push({
+                            id: 'item_' + Date.now() + '_' + Math.random().toString(36).substr(2, 7),
+                            name: file.name.replace(/\.[^/.]+$/, ""),
+                            canvas: canvas,
+                            width: img.width,
+                            height: img.height
+                        });
+                        resolve();
+                    };
+                    img.src = e.target.result;
+                };
+                reader.readAsDataURL(file);
+            });
+        }
+
+        function updateUI() {
+            pageCountEl.textContent = itemList.length;
+            if (itemList.length === 0) {
+                emptyState.classList.remove('hidden');
+                pageGrid.classList.add('hidden');
+            } else {
+                emptyState.classList.add('hidden');
+                pageGrid.classList.remove('hidden');
+                renderGridPreviews();
+            }
+        }
+
+        // 名前プレフィックス等の生成ルール
+        function getExportName(index, extension) {
+            const prefix = renamePrefix.value || 'file_';
+            const startNum = parseInt(renameStart.value, 10) || 1;
+            const digits = parseInt(renameDigits.value, 10) || 3;
+            const numStr = String(startNum + index).padStart(digits, '0');
+            return `${prefix}${numStr}.${extension}`;
+        }
+
+        // メイン一覧グリッドのプレビュー描画
+        function renderGridPreviews() {
+            pageGrid.innerHTML = '';
+
+            itemList.forEach((item, index) => {
+                const exportName = getExportName(index, 'jpg');
+                const card = document.createElement('div');
+                card.className = "bg-white border border-slate-200 rounded-xl p-3 flex flex-col shadow-sm hover:shadow transition";
+
+                card.innerHTML = `
+                    <div class="flex items-center justify-between mb-2 pb-2 border-b border-slate-100">
+                        <span class="text-xs font-semibold text-slate-600 truncate max-w-[180px]" title="${item.name}">${item.name}</span>
+                        <button class="btn-delete text-slate-400 hover:text-red-500 p-1" data-id="${item.id}">
+                            <i data-lucide="x" class="w-4 h-4"></i>
+                        </button>
+                    </div>
+                    <div class="bg-slate-100 rounded-lg p-1 flex items-center justify-center h-44 overflow-hidden relative">
+                        <canvas id="preview-canvas-${item.id}" class="max-h-full max-w-full object-contain shadow-sm rounded"></canvas>
+                    </div>
+                    <div class="mt-2 pt-2 border-t border-slate-100 space-y-1">
+                        <div class="flex justify-between items-center text-[11px]">
+                            <span class="text-slate-400">保存予定名:</span>
+                            <span class="font-medium text-blue-600 truncate max-w-[160px]">${exportName}</span>
+                        </div>
+                    </div>
+                `;
+
+                pageGrid.appendChild(card);
+
+                // キャンバスへクロップ結果を反映レンダリング
+                setTimeout(() => {
+                    const previewCanvas = document.getElementById(`preview-canvas-${item.id}`);
+                    if (previewCanvas) renderCroppedItemToCanvas(item, previewCanvas);
+                }, 0);
+            });
+
+            lucide.createIcons();
+
+            document.querySelectorAll('.btn-delete').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const id = e.currentTarget.getAttribute('data-id');
+                    itemList = itemList.filter(item => item.id !== id);
+                    updateUI();
+                });
+            });
+        }
+
+        // 指定領域を切り出してターゲットCanvasへ描画する共通関数
+        function renderCroppedItemToCanvas(item, targetCanvas) {
+            const srcCanvas = item.canvas;
+            
+            const sx = srcCanvas.width * cropRegionPercent.x;
+            const sy = srcCanvas.height * cropRegionPercent.y;
+            const sw = srcCanvas.width * cropRegionPercent.w;
+            const sh = srcCanvas.height * cropRegionPercent.h;
+
+            targetCanvas.width = sw;
+            targetCanvas.height = sh;
+
+            const ctx = targetCanvas.getContext('2d');
+            ctx.clearRect(0, 0, targetCanvas.width, targetCanvas.height);
+            ctx.drawImage(srcCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
+        }
+
+        // --- 視覚的トリミングツール設定 (モーダルドラッグ指定) ---
+        let isDragging = false;
+        let startX = 0, startY = 0;
+
+        btnOpenRegionSelector.addEventListener('click', () => {
+            if (itemList.length === 0) {
+                alert('先に画像またはPDFを読み込んでください。');
+                return;
+            }
+            // 最初のページをトリミング領域指定の背景として使用
+            const sampleItem = itemList[0];
+            regionCanvas.width = sampleItem.width;
+            regionCanvas.height = sampleItem.height;
+
+            const ctx = regionCanvas.getContext('2d');
+            ctx.drawImage(sampleItem.canvas, 0, 0);
+
+            regionModal.classList.remove('hidden');
+            initCropBoxOverlay();
+        });
+
+        btnCloseRegionModal.addEventListener('click', () => regionModal.classList.add('hidden'));
+
+        function initCropBoxOverlay() {
+            cropBox.classList.remove('hidden');
+            updateCropBoxDOM();
+        }
+
+        function updateCropBoxDOM() {
+            const cw = regionCanvas.clientWidth;
+            const ch = regionCanvas.clientHeight;
+
+            cropBox.style.left = `${cropRegionPercent.x * cw}px`;
+            cropBox.style.top = `${cropRegionPercent.y * ch}px`;
+            cropBox.style.width = `${cropRegionPercent.w * cw}px`;
+            cropBox.style.height = `${cropRegionPercent.h * ch}px`;
+
+            const realW = Math.round(regionCanvas.width * cropRegionPercent.w);
+            const realH = Math.round(regionCanvas.height * cropRegionPercent.h);
+            cropCoordsText.textContent = `選択範囲: 幅 ${realW}px × 高さ ${realH}px (相対位置: ${(cropRegionPercent.x*100).toFixed(0)}%, ${(cropRegionPercent.y*100).toFixed(0)}%)`;
+        }
+
+        // ドラッグによるクロップ領域指定
+        canvasContainer.addEventListener('mousedown', (e) => {
+            const rect = regionCanvas.getBoundingClientRect();
+            startX = e.clientX - rect.left;
+            startY = e.clientY - rect.top;
+            isDragging = true;
+
+            cropRegionPercent = {
+                x: startX / rect.width,
+                y: startY / rect.height,
+                w: 0,
+                h: 0
+            };
+            updateCropBoxDOM();
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            const rect = regionCanvas.getBoundingClientRect();
+            let currentX = e.clientX - rect.left;
+            let currentY = e.clientY - rect.top;
+
+            // 枠内制限
+            currentX = Math.max(0, Math.min(currentX, rect.width));
+            currentY = Math.max(0, Math.min(currentY, rect.height));
+
+            const width = currentX - startX;
+            const height = currentY - startY;
+
+            cropRegionPercent.x = (width < 0 ? currentX : startX) / rect.width;
+            cropRegionPercent.y = (height < 0 ? currentY : startY) / rect.height;
+            cropRegionPercent.w = Math.abs(width) / rect.width;
+            cropRegionPercent.h = Math.abs(height) / rect.height;
+
+            updateCropBoxDOM();
+        });
+
+        window.addEventListener('mouseup', () => {
+            if (isDragging) {
+                isDragging = false;
+                // 非常に小さい選択の場合は全画面リセット
+                if (cropRegionPercent.w < 0.02 || cropRegionPercent.h < 0.02) {
+                    cropRegionPercent = { x: 0, y: 0, w: 1, h: 1 };
+                    updateCropBoxDOM();
+                }
+            }
+        });
+
+        btnResetCrop.addEventListener('click', () => {
+            cropRegionPercent = { x: 0, y: 0, w: 1, h: 1 };
+            updateCropBoxDOM();
+        });
+
+        btnApplyCrop.addEventListener('click', () => {
+            regionModal.classList.add('hidden');
+            renderGridPreviews();
+        });
+
+        // --- 保存・エクスポート機能 ---
+
+        // ZIP画像一括エクスポート (JPEG / PNG)
+        async function exportImagesAsZip(format) {
+            if (itemList.length === 0) {
+                alert('処理する画像がありません。');
+                return;
+            }
+
+            const zip = new JSZip();
+            const ext = format === 'image/jpeg' ? 'jpg' : 'png';
+
+            for (let i = 0; i < itemList.length; i++) {
+                const item = itemList[i];
+                const tempCanvas = document.createElement('canvas');
+                renderCroppedItemToCanvas(item, tempCanvas);
+
+                const dataUrl = tempCanvas.toDataURL(format, 0.92);
+                const base64Data = dataUrl.split(',')[1];
+                const fileName = getExportName(i, ext);
+
+                zip.file(fileName, base64Data, { base64: true });
+            }
+
+            const blob = await zip.generateAsync({ type: 'blob' });
+            saveAs(blob, `cropped_images_${ext}.zip`);
+        }
+
+        btnExportJpegZip.addEventListener('click', () => exportImagesAsZip('image/jpeg'));
+        btnExportPngZip.addEventListener('click', () => exportImagesAsZip('image/png'));
+
+        // 結合PDFエクスポート
+        btnExportPdf.addEventListener('click', () => {
+            if (itemList.length === 0) {
+                alert('処理する画像がありません。');
+                return;
+            }
+
+            const { jsPDF } = window.jspdf;
+            let pdf = null;
+
+            for (let i = 0; i < itemList.length; i++) {
+                const item = itemList[i];
+                const tempCanvas = document.createElement('canvas');
+                renderCroppedItemToCanvas(item, tempCanvas);
+
+                const imgData = tempCanvas.toDataURL('image/jpeg', 0.90);
+                const w = tempCanvas.width;
+                const h = tempCanvas.height;
+                const orientation = w > h ? 'l' : 'p';
+
+                if (i === 0) {
+                    pdf = new jsPDF({ orientation, unit: 'px', format: [w, h] });
+                } else {
+                    pdf.addPage([w, h], orientation);
+                }
+
+                pdf.addImage(imgData, 'JPEG', 0, 0, w, h);
+            }
+
+            pdf.save('cropped_output.pdf');
+        });
+    </script>
+</body>
+</html>
